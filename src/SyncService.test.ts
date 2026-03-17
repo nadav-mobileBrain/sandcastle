@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import { FilesystemSandbox } from "./FilesystemSandbox.js";
-import { syncIn } from "./SyncService.js";
+import { syncIn, syncOut } from "./SyncService.js";
 
 const execAsync = promisify(exec);
 
@@ -154,5 +154,152 @@ describe("syncIn", () => {
     const { stdout: files } = await execAsync("ls", { cwd: sandboxRepoDir });
     expect(files).not.toContain("sandbox-only.txt");
     expect(files).not.toContain("untracked.txt");
+  });
+});
+
+const initSandboxGit = async (sandboxRepoDir: string) => {
+  await execAsync('git config user.email "test@test.com"', {
+    cwd: sandboxRepoDir,
+  });
+  await execAsync('git config user.name "Test"', { cwd: sandboxRepoDir });
+};
+
+const syncInAndGetBase = async (
+  hostDir: string,
+  sandboxRepoDir: string,
+  layer: ReturnType<typeof FilesystemSandbox.layer>,
+) => {
+  await Effect.runPromise(
+    syncIn(hostDir, sandboxRepoDir).pipe(Effect.provide(layer)),
+  );
+  return await getHead(hostDir);
+};
+
+describe("syncOut", () => {
+  it("single new commit — patch applies cleanly on host", async () => {
+    const { hostDir, sandboxRepoDir, layer } = await setup();
+    await initRepo(hostDir);
+    await commitFile(hostDir, "initial.txt", "initial", "initial commit");
+
+    const baseHead = await syncInAndGetBase(hostDir, sandboxRepoDir, layer);
+    await initSandboxGit(sandboxRepoDir);
+
+    await commitFile(
+      sandboxRepoDir,
+      "new-file.txt",
+      "from sandbox",
+      "sandbox commit",
+    );
+
+    await Effect.runPromise(
+      syncOut(hostDir, sandboxRepoDir, baseHead).pipe(Effect.provide(layer)),
+    );
+
+    const content = await readFile(join(hostDir, "new-file.txt"), "utf-8");
+    expect(content).toBe("from sandbox");
+
+    const { stdout } = await execAsync("git log --oneline", { cwd: hostDir });
+    expect(stdout).toContain("sandbox commit");
+  });
+
+  it("multiple new commits — all patches apply in order", async () => {
+    const { hostDir, sandboxRepoDir, layer } = await setup();
+    await initRepo(hostDir);
+    await commitFile(hostDir, "initial.txt", "initial", "initial commit");
+
+    const baseHead = await syncInAndGetBase(hostDir, sandboxRepoDir, layer);
+    await initSandboxGit(sandboxRepoDir);
+
+    await commitFile(sandboxRepoDir, "a.txt", "a", "first sandbox commit");
+    await commitFile(sandboxRepoDir, "b.txt", "b", "second sandbox commit");
+    await commitFile(sandboxRepoDir, "c.txt", "c", "third sandbox commit");
+
+    await Effect.runPromise(
+      syncOut(hostDir, sandboxRepoDir, baseHead).pipe(Effect.provide(layer)),
+    );
+
+    expect(await readFile(join(hostDir, "a.txt"), "utf-8")).toBe("a");
+    expect(await readFile(join(hostDir, "b.txt"), "utf-8")).toBe("b");
+    expect(await readFile(join(hostDir, "c.txt"), "utf-8")).toBe("c");
+
+    const { stdout } = await execAsync("git log --oneline", { cwd: hostDir });
+    const lines = stdout.trim().split("\n");
+    expect(lines).toHaveLength(4); // initial + 3 sandbox commits
+    expect(lines[0]).toContain("third sandbox commit");
+    expect(lines[1]).toContain("second sandbox commit");
+    expect(lines[2]).toContain("first sandbox commit");
+  });
+
+  it("uncommitted staged changes come back", async () => {
+    const { hostDir, sandboxRepoDir, layer } = await setup();
+    await initRepo(hostDir);
+    await commitFile(hostDir, "file.txt", "original", "initial commit");
+
+    const baseHead = await syncInAndGetBase(hostDir, sandboxRepoDir, layer);
+
+    // Stage a change in sandbox (but don't commit)
+    await writeFile(join(sandboxRepoDir, "file.txt"), "modified in sandbox");
+    await execAsync("git add file.txt", { cwd: sandboxRepoDir });
+
+    await Effect.runPromise(
+      syncOut(hostDir, sandboxRepoDir, baseHead).pipe(Effect.provide(layer)),
+    );
+
+    const content = await readFile(join(hostDir, "file.txt"), "utf-8");
+    expect(content).toBe("modified in sandbox");
+  });
+
+  it("uncommitted unstaged changes come back", async () => {
+    const { hostDir, sandboxRepoDir, layer } = await setup();
+    await initRepo(hostDir);
+    await commitFile(hostDir, "file.txt", "original", "initial commit");
+
+    const baseHead = await syncInAndGetBase(hostDir, sandboxRepoDir, layer);
+
+    // Modify without staging
+    await writeFile(join(sandboxRepoDir, "file.txt"), "unstaged change");
+
+    await Effect.runPromise(
+      syncOut(hostDir, sandboxRepoDir, baseHead).pipe(Effect.provide(layer)),
+    );
+
+    const content = await readFile(join(hostDir, "file.txt"), "utf-8");
+    expect(content).toBe("unstaged change");
+  });
+
+  it("untracked files come back", async () => {
+    const { hostDir, sandboxRepoDir, layer } = await setup();
+    await initRepo(hostDir);
+    await commitFile(hostDir, "file.txt", "original", "initial commit");
+
+    const baseHead = await syncInAndGetBase(hostDir, sandboxRepoDir, layer);
+
+    // Create untracked file in sandbox
+    await writeFile(join(sandboxRepoDir, "untracked.txt"), "new file");
+
+    await Effect.runPromise(
+      syncOut(hostDir, sandboxRepoDir, baseHead).pipe(Effect.provide(layer)),
+    );
+
+    const content = await readFile(join(hostDir, "untracked.txt"), "utf-8");
+    expect(content).toBe("new file");
+  });
+
+  it("no changes in sandbox — no-op, no error", async () => {
+    const { hostDir, sandboxRepoDir, layer } = await setup();
+    await initRepo(hostDir);
+    await commitFile(hostDir, "file.txt", "original", "initial commit");
+
+    const baseHead = await syncInAndGetBase(hostDir, sandboxRepoDir, layer);
+
+    // No changes made in sandbox
+    await Effect.runPromise(
+      syncOut(hostDir, sandboxRepoDir, baseHead).pipe(Effect.provide(layer)),
+    );
+
+    // Host is unchanged
+    expect(await getHead(hostDir)).toBe(baseHead);
+    const content = await readFile(join(hostDir, "file.txt"), "utf-8");
+    expect(content).toBe("original");
   });
 });

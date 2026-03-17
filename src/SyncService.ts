@@ -1,6 +1,6 @@
 import { Effect } from "effect";
 import { execFile } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -138,4 +138,130 @@ export const syncIn = (
     }
 
     return { branch };
+  });
+
+export const syncOut = (
+  hostRepoDir: string,
+  sandboxRepoDir: string,
+  baseHead: string,
+): Effect.Effect<void, SandboxError, Sandbox> =>
+  Effect.gen(function* () {
+    const sandbox = yield* Sandbox;
+
+    // --- 1. Sync commits via format-patch / git am ---
+    const sandboxHead = (yield* execOk(sandbox, "git rev-parse HEAD", {
+      cwd: sandboxRepoDir,
+    })).stdout.trim();
+
+    if (sandboxHead !== baseHead) {
+      // Count new commits
+      const countResult = yield* execOk(
+        sandbox,
+        `git rev-list "${baseHead}..HEAD" --count`,
+        { cwd: sandboxRepoDir },
+      );
+      const commitCount = parseInt(countResult.stdout.trim(), 10);
+
+      if (commitCount > 0) {
+        // Generate patches in sandbox
+        const sandboxPatchDir = (yield* execOk(
+          sandbox,
+          "mktemp -d -t sandcastle-patches-XXXXXX",
+        )).stdout.trim();
+
+        yield* execOk(
+          sandbox,
+          `git format-patch "${baseHead}..HEAD" -o "${sandboxPatchDir}"`,
+          { cwd: sandboxRepoDir },
+        );
+
+        // Create host-side temp dir for patches
+        const hostPatchDir = yield* Effect.promise(() =>
+          mkdtemp(join(tmpdir(), "sandcastle-patches-")),
+        );
+
+        // List patch files and copy them out
+        const patchListResult = yield* execOk(
+          sandbox,
+          `ls "${sandboxPatchDir}"/*.patch`,
+        );
+        const patchFiles = patchListResult.stdout
+          .trim()
+          .split("\n")
+          .filter((f) => f.length > 0);
+
+        for (const sandboxPatchPath of patchFiles) {
+          const filename = sandboxPatchPath.split("/").pop()!;
+          const hostPatchPath = join(hostPatchDir, filename);
+          yield* sandbox.copyOut(sandboxPatchPath, hostPatchPath);
+        }
+
+        // Abort any leftover git am session
+        yield* Effect.ignore(execHost("git am --abort", hostRepoDir));
+
+        // Apply patches in order
+        const sortedFiles = (yield* Effect.promise(() => readdir(hostPatchDir)))
+          .filter((f) => f.endsWith(".patch"))
+          .sort();
+
+        for (const file of sortedFiles) {
+          yield* execHost(
+            `git am --3way "${join(hostPatchDir, file)}"`,
+            hostRepoDir,
+          );
+        }
+
+        // Clean up
+        yield* sandbox.exec(`rm -rf "${sandboxPatchDir}"`);
+        yield* Effect.promise(() => rm(hostPatchDir, { recursive: true }));
+      }
+    }
+
+    // --- 2. Sync uncommitted changes ---
+
+    // Staged + unstaged changes via git diff HEAD
+    const diffCheck = yield* sandbox.exec("git diff HEAD --quiet", {
+      cwd: sandboxRepoDir,
+    });
+    if (diffCheck.exitCode !== 0) {
+      const sandboxDiffDir = (yield* execOk(
+        sandbox,
+        "mktemp -d -t sandcastle-diff-XXXXXX",
+      )).stdout.trim();
+      const sandboxDiffFile = `${sandboxDiffDir}/changes.patch`;
+      const hostDiffDir = yield* Effect.promise(() =>
+        mkdtemp(join(tmpdir(), "sandcastle-diff-")),
+      );
+      const hostDiffFile = join(hostDiffDir, "changes.patch");
+
+      yield* execOk(sandbox, `git diff HEAD > "${sandboxDiffFile}"`, {
+        cwd: sandboxRepoDir,
+      });
+      yield* sandbox.copyOut(sandboxDiffFile, hostDiffFile);
+      yield* execHost(`git apply "${hostDiffFile}"`, hostRepoDir);
+
+      yield* sandbox.exec(`rm -rf "${sandboxDiffDir}"`);
+      yield* Effect.promise(() => rm(hostDiffDir, { recursive: true }));
+    }
+
+    // Untracked files
+    const untrackedResult = yield* sandbox.exec(
+      "git ls-files --others --exclude-standard",
+      { cwd: sandboxRepoDir },
+    );
+    if (
+      untrackedResult.exitCode === 0 &&
+      untrackedResult.stdout.trim().length > 0
+    ) {
+      const untrackedFiles = untrackedResult.stdout
+        .trim()
+        .split("\n")
+        .filter((f) => f.length > 0);
+
+      for (const file of untrackedFiles) {
+        const sandboxFilePath = `${sandboxRepoDir}/${file}`;
+        const hostFilePath = join(hostRepoDir, file);
+        yield* sandbox.copyOut(sandboxFilePath, hostFilePath);
+      }
+    }
   });
