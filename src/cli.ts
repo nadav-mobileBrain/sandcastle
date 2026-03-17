@@ -1,6 +1,6 @@
 import { Command, Options } from "@effect/cli";
 import { Console, Effect } from "effect";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { readConfig } from "./Config.js";
@@ -258,6 +258,107 @@ const runCommand = Command.make(
     }),
 );
 
+// --- Interactive command ---
+
+const interactiveCommand = Command.make(
+  "interactive",
+  {
+    container: containerOption,
+  },
+  ({ container }) =>
+    Effect.gen(function* () {
+      const hostRepoDir = process.cwd();
+      const repoName = hostRepoDir.split("/").pop()!;
+      const sandboxRepoDir = `${SANDBOX_REPOS_DIR}/${repoName}`;
+
+      const config = yield* readConfig(hostRepoDir);
+      const layer = DockerSandbox.layer(container);
+
+      yield* Console.log("=== SANDCASTLE (Interactive) ===");
+      yield* Console.log(`Container: ${container}`);
+      yield* Console.log("");
+
+      // Sync in
+      yield* Console.log("Syncing repo into sandbox...");
+      const { branch: _branch } = yield* syncIn(
+        hostRepoDir,
+        sandboxRepoDir,
+        config,
+      ).pipe(Effect.provide(layer));
+
+      // Record base HEAD for sync-out
+      const baseHead = yield* Effect.async<string, SandboxError>((resume) => {
+        execFile(
+          "docker",
+          ["exec", "-w", sandboxRepoDir, container, "git", "rev-parse", "HEAD"],
+          (error, stdout) => {
+            if (error) {
+              resume(
+                Effect.fail(
+                  new SandboxError(
+                    "interactive",
+                    `Failed to get sandbox HEAD: ${error.message}`,
+                  ),
+                ),
+              );
+            } else {
+              resume(Effect.succeed(stdout.toString().trim()));
+            }
+          },
+        );
+      });
+
+      // Launch interactive Claude session with TTY passthrough
+      yield* Console.log("Launching interactive Claude session...");
+      yield* Console.log("");
+
+      const exitCode = yield* Effect.async<number, SandboxError>((resume) => {
+        const proc = spawn(
+          "docker",
+          [
+            "exec",
+            "-it",
+            "-w",
+            sandboxRepoDir,
+            container,
+            "claude",
+            "--dangerously-skip-permissions",
+            "--model",
+            "claude-opus-4-6",
+          ],
+          { stdio: "inherit" },
+        );
+
+        proc.on("error", (error) => {
+          resume(
+            Effect.fail(
+              new SandboxError(
+                "interactive",
+                `Failed to launch Claude: ${error.message}`,
+              ),
+            ),
+          );
+        });
+
+        proc.on("close", (code) => {
+          resume(Effect.succeed(code ?? 0));
+        });
+      });
+
+      yield* Console.log("");
+      yield* Console.log(
+        `Session ended (exit code ${exitCode}). Syncing changes back...`,
+      );
+
+      // Sync out
+      yield* syncOut(hostRepoDir, sandboxRepoDir, baseHead).pipe(
+        Effect.provide(layer),
+      );
+
+      yield* Console.log("Sync complete.");
+    }),
+);
+
 // --- Root command ---
 
 const rootCommand = Command.make("sandcastle", {}, () =>
@@ -274,6 +375,7 @@ export const sandcastle = rootCommand.pipe(
     setupCommand,
     cleanupCommand,
     runCommand,
+    interactiveCommand,
   ]),
 );
 

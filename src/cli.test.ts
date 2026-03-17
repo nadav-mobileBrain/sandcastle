@@ -122,5 +122,6 @@ describe("sandcastle CLI", () => {
     expect(stdout).toContain("setup");
     expect(stdout).toContain("cleanup");
     expect(stdout).toContain("run");
+    expect(stdout).toContain("interactive");
   });
 });
