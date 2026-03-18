@@ -80,6 +80,19 @@ export const startContainer = (
   });
 
 /**
+ * Stop and remove a container without removing the image.
+ */
+export const removeContainer = (
+  containerName: string,
+): Effect.Effect<void, SandboxError> =>
+  Effect.gen(function* () {
+    // Stop container (ignore errors if already stopped)
+    yield* Effect.ignore(dockerExec(["stop", containerName]));
+    // Remove container (ignore errors if not found)
+    yield* Effect.ignore(dockerExec(["rm", containerName]));
+  });
+
+/**
  * Stop and remove the container and image.
  */
 export const cleanupContainer = (
