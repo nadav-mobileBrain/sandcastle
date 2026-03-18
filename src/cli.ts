@@ -1,8 +1,9 @@
 import { Command, Options } from "@effect/cli";
 import { Console, Effect } from "effect";
 import { execFile, spawn } from "node:child_process";
+import { access } from "node:fs/promises";
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { readConfig } from "./Config.js";
 import { DockerSandbox } from "./DockerSandbox.js";
 import { FilesystemSandbox } from "./FilesystemSandbox.js";
@@ -11,9 +12,11 @@ import {
   cleanupContainer,
   startContainer,
 } from "./DockerLifecycle.js";
+import { scaffold } from "./InitService.js";
 import { orchestrate } from "./Orchestrator.js";
 import { SandboxError } from "./Sandbox.js";
 import { syncIn, syncOut } from "./SyncService.js";
+import { resolveTokens } from "./TokenResolver.js";
 
 // --- Shared options ---
 
@@ -37,36 +40,108 @@ const baseHeadOption = Options.text("base-head").pipe(
   ),
 );
 
-// --- Setup command ---
-
-const oauthTokenOption = Options.text("oauth-token").pipe(
-  Options.withDescription("Claude Code OAuth token"),
-);
-
-const ghTokenOption = Options.text("gh-token").pipe(
-  Options.withDescription("GitHub personal access token"),
-);
-
 const imageNameOption = Options.text("image-name").pipe(
   Options.withDescription("Docker image name"),
   Options.withDefault("sandcastle:local"),
 );
 
-const setupCommand = Command.make(
-  "setup",
+// --- Config directory check ---
+
+const CONFIG_DIR = ".sandcastle";
+
+const requireConfigDir = (
+  cwd: string,
+): Effect.Effect<void, SandboxError> =>
+  Effect.tryPromise({
+    try: () => access(join(cwd, CONFIG_DIR)),
+    catch: () =>
+      new SandboxError(
+        "configDir",
+        "No .sandcastle/ found. Run `sandcastle init` first.",
+      ),
+  });
+
+// --- Init command ---
+
+const initCommand = Command.make(
+  "init",
   {
     container: containerOption,
-    oauthToken: oauthTokenOption,
-    ghToken: ghTokenOption,
     imageName: imageNameOption,
   },
-  ({ container, oauthToken, ghToken, imageName }) =>
+  ({ container, imageName }) =>
     Effect.gen(function* () {
+      const cwd = process.cwd();
+
+      yield* Console.log("Scaffolding .sandcastle/ config directory...");
+      yield* Effect.tryPromise({
+        try: () => scaffold(cwd),
+        catch: (e) =>
+          new SandboxError("init", `${e instanceof Error ? e.message : e}`),
+      });
+      yield* Console.log("Config directory created.");
+
+      // Resolve tokens
+      const tokens = yield* Effect.tryPromise({
+        try: () => resolveTokens(cwd),
+        catch: (e) =>
+          new SandboxError("init", `${e instanceof Error ? e.message : e}`),
+      });
+
+      // Build image from .sandcastle/ directory
+      const dockerfileDir = join(cwd, CONFIG_DIR);
       yield* Console.log(`Building Docker image '${imageName}'...`);
-      yield* buildImage(imageName);
+      yield* buildImage(imageName, dockerfileDir);
+
+      // Start container
+      yield* Console.log(`Starting container '${container}'...`);
+      yield* startContainer(
+        container,
+        imageName,
+        tokens.oauthToken,
+        tokens.ghToken,
+      );
+
+      yield* Console.log(
+        `Init complete! Container '${container}' is running.`,
+      );
+    }),
+);
+
+// --- Setup-sandbox command ---
+
+const setupSandboxCommand = Command.make(
+  "setup-sandbox",
+  {
+    container: containerOption,
+    imageName: imageNameOption,
+  },
+  ({ container, imageName }) =>
+    Effect.gen(function* () {
+      const cwd = process.cwd();
+      yield* requireConfigDir(cwd);
+
+      // Resolve tokens
+      const tokens = yield* Effect.tryPromise({
+        try: () => resolveTokens(cwd),
+        catch: (e) =>
+          new SandboxError(
+            "setup-sandbox",
+            `${e instanceof Error ? e.message : e}`,
+          ),
+      });
+
+      const dockerfileDir = join(cwd, CONFIG_DIR);
+      yield* Console.log(`Building Docker image '${imageName}'...`);
+      yield* buildImage(imageName, dockerfileDir);
 
       yield* Console.log(`Starting container '${container}'...`);
-      yield* startContainer(container, imageName, oauthToken, ghToken);
+      yield* startContainer(
+        container,
+        imageName,
+        tokens.oauthToken,
+        tokens.ghToken,
+      );
 
       yield* Console.log(
         `Setup complete! Container '${container}' is running.`,
@@ -74,10 +149,10 @@ const setupCommand = Command.make(
     }),
 );
 
-// --- Cleanup command ---
+// --- Cleanup-sandbox command ---
 
-const cleanupCommand = Command.make(
-  "cleanup",
+const cleanupSandboxCommand = Command.make(
+  "cleanup-sandbox",
   {
     container: containerOption,
     imageName: imageNameOption,
@@ -194,13 +269,6 @@ const detectRepoFullName = (cwd: string): Effect.Effect<string, SandboxError> =>
     );
   });
 
-const DEFAULT_PROMPT_PATH = join(
-  import.meta.dirname,
-  "..",
-  "docker-container-experiment",
-  "prompt.md",
-);
-
 const runCommand = Command.make(
   "run",
   {
@@ -212,15 +280,19 @@ const runCommand = Command.make(
   ({ container, iterations, promptFile }) =>
     Effect.gen(function* () {
       const hostRepoDir = process.cwd();
+      yield* requireConfigDir(hostRepoDir);
+
       const repoName = hostRepoDir.split("/").pop()!;
       const sandboxRepoDir = `${SANDBOX_REPOS_DIR}/${repoName}`;
 
       // Detect repo full name for issue fetching
       const repoFullName = yield* detectRepoFullName(hostRepoDir);
 
-      // Load prompt
+      // Load prompt — default to .sandcastle/prompt.md relative to cwd
       const promptPath =
-        promptFile._tag === "Some" ? promptFile.value : DEFAULT_PROMPT_PATH;
+        promptFile._tag === "Some"
+          ? resolve(promptFile.value)
+          : join(hostRepoDir, CONFIG_DIR, "prompt.md");
       const prompt = yield* Effect.tryPromise({
         try: () => readFile(promptPath, "utf-8"),
         catch: (e) =>
@@ -373,8 +445,9 @@ export const sandcastle = rootCommand.pipe(
   Command.withSubcommands([
     syncInCommand,
     syncOutCommand,
-    setupCommand,
-    cleanupCommand,
+    initCommand,
+    setupSandboxCommand,
+    cleanupSandboxCommand,
     runCommand,
     interactiveCommand,
   ]),

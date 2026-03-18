@@ -120,9 +120,41 @@ describe("sandcastle CLI", () => {
     expect(stdout).toContain("sandcastle");
     expect(stdout).toContain("sync-in");
     expect(stdout).toContain("sync-out");
-    expect(stdout).toContain("setup");
-    expect(stdout).toContain("cleanup");
+    expect(stdout).toContain("setup-sandbox");
+    expect(stdout).toContain("cleanup-sandbox");
+    expect(stdout).toContain("init");
     expect(stdout).toContain("run");
     expect(stdout).toContain("interactive");
+  });
+
+  it("setup-sandbox and cleanup-sandbox replace old setup/cleanup names", async () => {
+    const { stdout } = await runCli("--help", process.cwd());
+    // New names present
+    expect(stdout).toContain("setup-sandbox");
+    expect(stdout).toContain("cleanup-sandbox");
+    // Old names should not appear as standalone commands
+    // (they may appear as substrings of the new names, so check that
+    // "setup" only appears in the context of "setup-sandbox")
+    const lines = stdout.split("\n");
+    const setupLines = lines.filter(
+      (l: string) => l.includes("setup") && !l.includes("setup-sandbox"),
+    );
+    expect(setupLines.length).toBe(0);
+  });
+
+  it("run command errors when .sandcastle/ is missing", async () => {
+    const hostDir = await mkdtemp(join(tmpdir(), "cli-host-"));
+    await initRepo(hostDir);
+    await commitFile(hostDir, "hello.txt", "hello", "initial commit");
+
+    // No .sandcastle/ directory — run should fail
+    try {
+      await runCli("run --container test-container", hostDir);
+      expect.fail("Expected command to fail");
+    } catch (err: unknown) {
+      const { stdout, stderr } = err as { stdout: string; stderr: string };
+      const output = stdout + stderr;
+      expect(output).toContain("No .sandcastle/ found");
+    }
   });
 });

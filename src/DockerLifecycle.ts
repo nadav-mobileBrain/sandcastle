@@ -27,15 +27,14 @@ const dockerExec = (args: string[]): Effect.Effect<string, SandboxError> =>
   });
 
 /**
- * Build the sandcastle Docker image from the Dockerfile in the package root.
+ * Build the sandcastle Docker image from a Dockerfile directory.
  */
 export const buildImage = (
   imageName: string,
+  dockerfileDir: string,
 ): Effect.Effect<void, SandboxError> =>
   Effect.gen(function* () {
-    // Dockerfile is at the package root (next to package.json)
-    const dockerfileDir = resolve(import.meta.dirname, "..");
-    yield* dockerExec(["build", "-t", imageName, dockerfileDir]);
+    yield* dockerExec(["build", "-t", imageName, resolve(dockerfileDir)]);
   });
 
 /**
