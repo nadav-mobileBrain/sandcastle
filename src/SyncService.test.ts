@@ -1050,6 +1050,133 @@ describe("--branch syncOut", () => {
     expect(worktrees.trim().split("\n")).toHaveLength(1);
   });
 
+  it("sandbox commits + uncommitted changes → WIP commit on branch after regular commits", async () => {
+    const { hostDir, sandboxRepoDir, layer } = await setup();
+    await initRepo(hostDir);
+    await commitFile(hostDir, "base.txt", "base", "initial commit");
+
+    await Effect.runPromise(
+      syncIn(hostDir, sandboxRepoDir, { branch: "feature/wip" }).pipe(
+        Effect.provide(layer),
+      ),
+    );
+    const baseHead = await getHead(sandboxRepoDir);
+    await initSandboxGit(sandboxRepoDir);
+
+    // Agent makes regular commits
+    await commitFile(
+      sandboxRepoDir,
+      "feature.txt",
+      "feature work",
+      "add feature",
+    );
+
+    // Agent leaves uncommitted staged changes
+    await writeFile(join(sandboxRepoDir, "staged.txt"), "staged content");
+    await execAsync("git add staged.txt", { cwd: sandboxRepoDir });
+
+    // Agent leaves uncommitted unstaged changes
+    await writeFile(join(sandboxRepoDir, "feature.txt"), "modified in sandbox");
+
+    // Agent leaves untracked files
+    await writeFile(join(sandboxRepoDir, "untracked.txt"), "untracked content");
+
+    await Effect.runPromise(
+      syncOut(hostDir, sandboxRepoDir, baseHead, {
+        branch: "feature/wip",
+      }).pipe(Effect.provide(layer)),
+    );
+
+    // Host should still be on main
+    expect(await getBranch(hostDir)).toBe("main");
+
+    // Branch should have regular commit + WIP commit
+    const { stdout: log } = await execAsync("git log --oneline feature/wip", {
+      cwd: hostDir,
+    });
+    expect(log).toContain("add feature");
+    expect(log).toMatch(/WIP/i);
+
+    // WIP commit should include all uncommitted/untracked files
+    const { stdout: wipMsg } = await execAsync(
+      "git log -1 --format=%B feature/wip",
+      { cwd: hostDir },
+    );
+    expect(wipMsg).toContain("staged.txt");
+    expect(wipMsg).toContain("feature.txt");
+    expect(wipMsg).toContain("untracked.txt");
+
+    // Files should be accessible on branch
+    const { stdout: staged } = await execAsync(
+      "git show feature/wip:staged.txt",
+      { cwd: hostDir },
+    );
+    expect(staged.trim()).toBe("staged content");
+
+    const { stdout: modified } = await execAsync(
+      "git show feature/wip:feature.txt",
+      { cwd: hostDir },
+    );
+    expect(modified.trim()).toBe("modified in sandbox");
+
+    const { stdout: untracked } = await execAsync(
+      "git show feature/wip:untracked.txt",
+      { cwd: hostDir },
+    );
+    expect(untracked.trim()).toBe("untracked content");
+
+    // WIP commit should appear after the regular commit
+    const { stdout: logOrder } = await execAsync(
+      'git log --oneline --format="%s" feature/wip',
+      { cwd: hostDir },
+    );
+    const lines = logOrder.trim().split("\n");
+    const wipIdx = lines.findIndex((l) => /WIP/i.test(l));
+    const featureIdx = lines.findIndex((l) => l.includes("add feature"));
+    expect(wipIdx).toBeLessThan(featureIdx); // WIP is more recent (lower index in log)
+  });
+
+  it("sandbox only uncommitted changes (no commits) → WIP commit on branch", async () => {
+    const { hostDir, sandboxRepoDir, layer } = await setup();
+    await initRepo(hostDir);
+    await commitFile(hostDir, "base.txt", "base", "initial commit");
+
+    await Effect.runPromise(
+      syncIn(hostDir, sandboxRepoDir, { branch: "feature/wip-only" }).pipe(
+        Effect.provide(layer),
+      ),
+    );
+    const baseHead = await getHead(sandboxRepoDir);
+    await initSandboxGit(sandboxRepoDir);
+
+    // No regular commits — only uncommitted changes
+    await writeFile(join(sandboxRepoDir, "modified.txt"), "modified content");
+    await writeFile(join(sandboxRepoDir, "untracked.txt"), "untracked content");
+
+    await Effect.runPromise(
+      syncOut(hostDir, sandboxRepoDir, baseHead, {
+        branch: "feature/wip-only",
+      }).pipe(Effect.provide(layer)),
+    );
+
+    // Host should still be on main
+    expect(await getBranch(hostDir)).toBe("main");
+
+    // Branch should exist with WIP commit
+    const { stdout: log } = await execAsync(
+      "git log --oneline feature/wip-only",
+      { cwd: hostDir },
+    );
+    expect(log).toMatch(/WIP/i);
+
+    // Files should be accessible
+    const { stdout: untracked } = await execAsync(
+      "git show feature/wip-only:untracked.txt",
+      { cwd: hostDir },
+    );
+    expect(untracked.trim()).toBe("untracked content");
+  });
+
   it("zero changes in sandbox — no branch created, no worktree created", async () => {
     const { hostDir, sandboxRepoDir, layer } = await setup();
     await initRepo(hostDir);

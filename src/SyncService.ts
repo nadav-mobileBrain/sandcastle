@@ -507,6 +507,73 @@ const syncOutDirect = (
     });
   });
 
+/** Create a WIP commit in the sandbox for any uncommitted/untracked changes */
+const createWipCommit = (
+  sandbox: SandboxService,
+  sandboxRepoDir: string,
+): Effect.Effect<boolean, SandboxError> =>
+  Effect.gen(function* () {
+    // Check for uncommitted changes (staged + unstaged)
+    const diffCheck = yield* sandbox.exec("git diff HEAD --quiet", {
+      cwd: sandboxRepoDir,
+    });
+    const stagedCheck = yield* sandbox.exec("git diff --cached --quiet", {
+      cwd: sandboxRepoDir,
+    });
+
+    // Check for untracked files
+    const untrackedResult = yield* sandbox.exec(
+      "git ls-files --others --exclude-standard",
+      { cwd: sandboxRepoDir },
+    );
+    const untrackedFiles =
+      untrackedResult.exitCode === 0 && untrackedResult.stdout.trim().length > 0
+        ? untrackedResult.stdout
+            .trim()
+            .split("\n")
+            .filter((f) => f.length > 0)
+        : [];
+
+    const hasUncommitted =
+      diffCheck.exitCode !== 0 ||
+      stagedCheck.exitCode !== 0 ||
+      untrackedFiles.length > 0;
+
+    if (!hasUncommitted) return false;
+
+    // Stage everything
+    yield* execOk(sandbox, "git add -A", { cwd: sandboxRepoDir });
+
+    // Build a detailed WIP commit message listing affected files
+    const statusResult = yield* execOk(
+      sandbox,
+      "git diff --cached --name-status",
+      {
+        cwd: sandboxRepoDir,
+      },
+    );
+    const fileList = statusResult.stdout.trim();
+
+    const message = [
+      "WIP: uncommitted sandbox changes",
+      "",
+      "These are uncommitted changes from a sandcastle sandbox run.",
+      "They were auto-committed to preserve work that would otherwise be lost.",
+      "",
+      "Affected files:",
+      ...fileList
+        .split("\n")
+        .filter((l) => l.length > 0)
+        .map((l) => `  ${l}`),
+    ].join("\n");
+
+    yield* execOk(sandbox, `git commit -m ${JSON.stringify(message)}`, {
+      cwd: sandboxRepoDir,
+    });
+
+    return true;
+  });
+
 /** Apply committed patches to a target branch via a temporary git worktree */
 const syncOutViaWorktree = (
   sandbox: SandboxService,
@@ -516,13 +583,16 @@ const syncOutViaWorktree = (
   targetBranch: string,
 ): Effect.Effect<void, SandboxError> =>
   Effect.gen(function* () {
-    // Check if there are new commits to apply
+    // Create WIP commit for any uncommitted/untracked changes
+    yield* createWipCommit(sandbox, sandboxRepoDir);
+
+    // Check if there are new commits to apply (including WIP)
     const sandboxHead = (yield* execOk(sandbox, "git rev-parse HEAD", {
       cwd: sandboxRepoDir,
     })).stdout.trim();
 
     if (sandboxHead === baseHead) {
-      // No commits — nothing to do
+      // No commits and no uncommitted changes — nothing to do
       return;
     }
 
