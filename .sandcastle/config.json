@@ -1,5 +1,5 @@
 {
-  "defaultIterations": 100,
+  "defaultMaxIterations": 100,
   "hooks": {
     "onSandboxReady": [
       {

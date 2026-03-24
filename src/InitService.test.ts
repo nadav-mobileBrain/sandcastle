@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { scaffold } from "./InitService.js";
-import { DOCKERFILE, PROMPT } from "./templates.js";
+import { DOCKERFILE, SKELETON_PROMPT } from "./templates.js";
 
 const makeDir = () => mkdtemp(join(tmpdir(), "init-service-"));
 
@@ -18,7 +18,7 @@ describe("InitService scaffold", () => {
     expect(dockerfile).toBe(DOCKERFILE);
 
     const prompt = await readFile(join(configDir, "prompt.md"), "utf-8");
-    expect(prompt).toBe(PROMPT);
+    expect(prompt).toBe(SKELETON_PROMPT);
 
     const envExample = await readFile(join(configDir, ".env.example"), "utf-8");
     expect(envExample).toContain("CLAUDE_CODE_OAUTH_TOKEN=");
@@ -46,6 +46,25 @@ describe("InitService scaffold", () => {
       "utf-8",
     );
     expect(gitignore).toContain("patches/");
+  });
+
+  it("skeleton prompt contains section headers and hints", async () => {
+    const dir = await makeDir();
+    await scaffold(dir);
+
+    const prompt = await readFile(
+      join(dir, ".sandcastle", "prompt.md"),
+      "utf-8",
+    );
+
+    // Should have section headers (minimal skeleton)
+    expect(prompt).toContain("# ");
+
+    // Should hint at !`command` syntax
+    expect(prompt).toContain("!`");
+
+    // Should hint at <promise>COMPLETE</promise> convention
+    expect(prompt).toContain("<promise>COMPLETE</promise>");
   });
 
   it("does not create config.json", async () => {

@@ -25,27 +25,37 @@ const expectConfigError = (exit: Exit.Exit<unknown, unknown>): string => {
 };
 
 describe("readConfig", () => {
-  it("reads defaultIterations from config", async () => {
+  it("reads defaultMaxIterations from config", async () => {
     const repoDir = await mkdtemp(join(tmpdir(), "config-test-"));
-    await setupConfigDir(repoDir, { defaultIterations: 10 });
+    await setupConfigDir(repoDir, { defaultMaxIterations: 10 });
 
     const config = await Effect.runPromise(readConfig(repoDir));
-    expect(config.defaultIterations).toBe(10);
+    expect(config.defaultMaxIterations).toBe(10);
   });
 
-  it("returns undefined for defaultIterations when not set", async () => {
+  it("returns undefined for defaultMaxIterations when not set", async () => {
     const repoDir = await mkdtemp(join(tmpdir(), "config-test-"));
     await setupConfigDir(repoDir, {});
 
     const config = await Effect.runPromise(readConfig(repoDir));
-    expect(config.defaultIterations).toBeUndefined();
+    expect(config.defaultMaxIterations).toBeUndefined();
   });
 
   it("returns empty config when file does not exist", async () => {
     const repoDir = await mkdtemp(join(tmpdir(), "config-test-"));
 
     const config = await Effect.runPromise(readConfig(repoDir));
-    expect(config.defaultIterations).toBeUndefined();
+    expect(config.defaultMaxIterations).toBeUndefined();
+  });
+
+  it("rejects old defaultIterations key with clear error", async () => {
+    const repoDir = await mkdtemp(join(tmpdir(), "config-test-"));
+    await setupConfigDir(repoDir, { defaultIterations: 10 });
+
+    const exit = await Effect.runPromiseExit(readConfig(repoDir));
+    const message = expectConfigError(exit);
+    expect(message).toContain("defaultIterations");
+    expect(message).toContain("defaultMaxIterations");
   });
 
   it("throws ConfigError on unknown top-level key", async () => {
@@ -89,12 +99,12 @@ describe("readConfig", () => {
         onSandboxCreate: [{ command: "apt-get update" }],
         onSandboxReady: [{ command: "npm install" }],
       },
-      defaultIterations: 3,
+      defaultMaxIterations: 3,
     });
 
     const config = await Effect.runPromise(readConfig(repoDir));
     expect(config.hooks?.onSandboxCreate?.[0]?.command).toBe("apt-get update");
     expect(config.hooks?.onSandboxReady?.[0]?.command).toBe("npm install");
-    expect(config.defaultIterations).toBe(3);
+    expect(config.defaultMaxIterations).toBe(3);
   });
 });

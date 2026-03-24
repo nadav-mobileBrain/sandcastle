@@ -270,7 +270,7 @@ const runCommand = Command.make(
       const resolvedIterations =
         iterations._tag === "Some"
           ? iterations.value
-          : (config.defaultIterations ?? 5);
+          : (config.defaultMaxIterations ?? 5);
 
       const resolvedBranch = branch._tag === "Some" ? branch.value : undefined;
 
