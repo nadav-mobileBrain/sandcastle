@@ -1225,6 +1225,148 @@ describe("--branch existing branch round-trip", () => {
   });
 });
 
+describe("--branch multi-iteration accumulation", () => {
+  it("iteration 2 picks up iteration 1's branch and accumulates commits", async () => {
+    const hostDir = await mkdtemp(join(tmpdir(), "host-"));
+    await initRepo(hostDir);
+    await commitFile(hostDir, "base.txt", "base", "initial on main");
+
+    const branchName = "feature/multi-iter";
+
+    // --- Iteration 1: fresh sandbox, create branch, make commits ---
+    {
+      const { sandboxRepoDir, layer } = await setup();
+
+      await Effect.runPromise(
+        syncIn(hostDir, sandboxRepoDir, { branch: branchName }).pipe(
+          Effect.provide(layer),
+        ),
+      );
+      const baseHead = await getHead(sandboxRepoDir);
+      await initSandboxGit(sandboxRepoDir);
+
+      // Verify sandbox is on the correct branch
+      expect(await getBranch(sandboxRepoDir)).toBe(branchName);
+
+      // Agent makes commits in iteration 1
+      await commitFile(
+        sandboxRepoDir,
+        "iter1-a.txt",
+        "iter1-a",
+        "iter1 commit A",
+      );
+      await commitFile(
+        sandboxRepoDir,
+        "iter1-b.txt",
+        "iter1-b",
+        "iter1 commit B",
+      );
+
+      await Effect.runPromise(
+        syncOut(hostDir, sandboxRepoDir, baseHead, {
+          branch: branchName,
+        }).pipe(Effect.provide(layer)),
+      );
+    }
+
+    // Verify iteration 1 created the branch on host
+    const { stdout: branchList } = await execAsync("git branch", {
+      cwd: hostDir,
+    });
+    expect(branchList).toContain("feature/multi-iter");
+    expect(await getBranch(hostDir)).toBe("main"); // host undisturbed
+
+    // --- Iteration 2: fresh sandbox, pick up existing branch, add more commits ---
+    {
+      const { sandboxRepoDir, layer } = await setup();
+
+      await Effect.runPromise(
+        syncIn(hostDir, sandboxRepoDir, { branch: branchName }).pipe(
+          Effect.provide(layer),
+        ),
+      );
+      const baseHead = await getHead(sandboxRepoDir);
+      await initSandboxGit(sandboxRepoDir);
+
+      // Verify sandbox sees iteration 1's commits
+      expect(await getBranch(sandboxRepoDir)).toBe(branchName);
+      const iter1aContent = await readFile(
+        join(sandboxRepoDir, "iter1-a.txt"),
+        "utf-8",
+      );
+      expect(iter1aContent).toBe("iter1-a");
+      const iter1bContent = await readFile(
+        join(sandboxRepoDir, "iter1-b.txt"),
+        "utf-8",
+      );
+      expect(iter1bContent).toBe("iter1-b");
+
+      // Agent makes more commits in iteration 2
+      await commitFile(
+        sandboxRepoDir,
+        "iter2-a.txt",
+        "iter2-a",
+        "iter2 commit A",
+      );
+      await commitFile(
+        sandboxRepoDir,
+        "iter2-b.txt",
+        "iter2-b",
+        "iter2 commit B",
+      );
+
+      await Effect.runPromise(
+        syncOut(hostDir, sandboxRepoDir, baseHead, {
+          branch: branchName,
+        }).pipe(Effect.provide(layer)),
+      );
+    }
+
+    // --- Verify final state: branch has ALL commits in order ---
+    expect(await getBranch(hostDir)).toBe("main"); // host still undisturbed
+
+    const { stdout: fullLog } = await execAsync(
+      `git log --oneline ${branchName}`,
+      { cwd: hostDir },
+    );
+    expect(fullLog).toContain("iter1 commit A");
+    expect(fullLog).toContain("iter1 commit B");
+    expect(fullLog).toContain("iter2 commit A");
+    expect(fullLog).toContain("iter2 commit B");
+    expect(fullLog).toContain("initial on main");
+
+    // Verify all files are accessible on the branch
+    for (const [file, content] of [
+      ["iter1-a.txt", "iter1-a"],
+      ["iter1-b.txt", "iter1-b"],
+      ["iter2-a.txt", "iter2-a"],
+      ["iter2-b.txt", "iter2-b"],
+      ["base.txt", "base"],
+    ]) {
+      const { stdout } = await execAsync(`git show ${branchName}:${file}`, {
+        cwd: hostDir,
+      });
+      expect(stdout.trim()).toBe(content);
+    }
+
+    // Verify commit ordering: iter2 commits are on top of iter1 commits
+    const { stdout: logOrder } = await execAsync(
+      `git log --oneline --format="%s" ${branchName}`,
+      { cwd: hostDir },
+    );
+    const lines = logOrder.trim().split("\n");
+    const iter2bIdx = lines.findIndex((l) => l.includes("iter2 commit B"));
+    const iter1aIdx = lines.findIndex((l) => l.includes("iter1 commit A"));
+    expect(iter2bIdx).toBeLessThan(iter1aIdx); // iter2 commits are more recent (lower index in log)
+
+    // Host working tree is clean
+    const { stdout: status } = await execAsync("git status --porcelain", {
+      cwd: hostDir,
+    });
+    expect(status.trim()).toBe("");
+  });
+});
+
 describe("hooks", () => {
   it("onSandboxReady hooks run after sync-in and effects are visible", async () => {
     const { hostDir, sandboxRepoDir, layer } = await setup();
