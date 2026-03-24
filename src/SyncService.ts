@@ -627,20 +627,21 @@ const syncOutViaWorktree = (
       mkdtemp(join(tmpdir(), "sandcastle-worktree-")),
     );
 
+    // Check if target branch already exists on host and record its tip
+    const branchExistsResult = yield* Effect.either(
+      execHost(
+        `git rev-parse --verify "refs/heads/${targetBranch}"`,
+        hostRepoDir,
+      ),
+    );
+    const branchExists = branchExistsResult._tag === "Right";
+    const originalBranchTip = branchExists
+      ? branchExistsResult.right.trim()
+      : undefined;
+
     const applyEffect = Effect.ensuring(
       // Try: create worktree and apply patches
       Effect.gen(function* () {
-        // Check if target branch already exists on host
-        const branchExists = yield* Effect.map(
-          Effect.either(
-            execHost(
-              `git rev-parse --verify "refs/heads/${targetBranch}"`,
-              hostRepoDir,
-            ),
-          ),
-          (either) => either._tag === "Right",
-        );
-
         if (branchExists) {
           yield* execHost(
             `git worktree add "${worktreeDir}/wt" "${targetBranch}"`,
@@ -686,19 +687,35 @@ const syncOutViaWorktree = (
     yield* Effect.matchEffect(applyEffect, {
       onSuccess: () =>
         Effect.promise(() => rm(patchDir, { recursive: true, force: true })),
-      onFailure: (error) => {
-        const relativePatchDir = relative(hostRepoDir, patchDir);
-        const recovery = buildRecoveryMessage({
-          patchDir: relativePatchDir,
-          failedStep: "commits",
-          hasCommits: true,
-          hasDiff: false,
-          hasUntracked: false,
-          branch: targetBranch,
-        });
-        const errorMsg = error.message + `\n\n${recovery}`;
-        return Effect.fail(new SandboxError(error.operation, errorMsg));
-      },
+      onFailure: (error) =>
+        Effect.gen(function* () {
+          // Roll back the branch to its original state (all-or-nothing)
+          if (originalBranchTip) {
+            yield* Effect.ignore(
+              execHost(
+                `git update-ref "refs/heads/${targetBranch}" "${originalBranchTip}"`,
+                hostRepoDir,
+              ),
+            );
+          } else {
+            // Branch was newly created — delete it
+            yield* Effect.ignore(
+              execHost(`git branch -D "${targetBranch}"`, hostRepoDir),
+            );
+          }
+
+          const relativePatchDir = relative(hostRepoDir, patchDir);
+          const recovery = buildRecoveryMessage({
+            patchDir: relativePatchDir,
+            failedStep: "commits",
+            hasCommits: true,
+            hasDiff: false,
+            hasUntracked: false,
+            branch: targetBranch,
+          });
+          const errorMsg = error.message + `\n\n${recovery}`;
+          yield* Effect.fail(new SandboxError(error.operation, errorMsg));
+        }),
     });
   });
 

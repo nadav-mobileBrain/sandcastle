@@ -1213,6 +1213,187 @@ describe("--branch syncOut", () => {
     });
     expect(worktrees.trim().split("\n")).toHaveLength(1);
   });
+
+  it("non-conflicting divergence: patches rebase cleanly onto moved host branch", async () => {
+    const { hostDir, sandboxRepoDir, layer } = await setup();
+    await initRepo(hostDir);
+    await commitFile(hostDir, "base.txt", "base", "initial commit");
+
+    // Create target branch on host
+    await execAsync("git checkout -b feature/diverge-ok", { cwd: hostDir });
+    await execAsync("git checkout main", { cwd: hostDir });
+
+    // Sync-in with --branch
+    await Effect.runPromise(
+      syncIn(hostDir, sandboxRepoDir, { branch: "feature/diverge-ok" }).pipe(
+        Effect.provide(layer),
+      ),
+    );
+    const baseHead = await getHead(sandboxRepoDir);
+    await initSandboxGit(sandboxRepoDir);
+
+    // Sandbox makes commits on a different file
+    await commitFile(
+      sandboxRepoDir,
+      "feature.txt",
+      "feature work",
+      "add feature",
+    );
+
+    // Meanwhile, host branch moves forward (non-conflicting: different file)
+    await execAsync("git checkout feature/diverge-ok", { cwd: hostDir });
+    await commitFile(hostDir, "host-change.txt", "host work", "host advance");
+    await execAsync("git checkout main", { cwd: hostDir });
+
+    // Sync-out should succeed — patches rebase onto moved tip
+    await Effect.runPromise(
+      syncOut(hostDir, sandboxRepoDir, baseHead, {
+        branch: "feature/diverge-ok",
+      }).pipe(Effect.provide(layer)),
+    );
+
+    // Branch should have BOTH the host advance commit and the sandbox commit
+    const { stdout: log } = await execAsync(
+      "git log --oneline feature/diverge-ok",
+      { cwd: hostDir },
+    );
+    expect(log).toContain("host advance");
+    expect(log).toContain("add feature");
+
+    // Both files should exist on the branch
+    const { stdout: hostContent } = await execAsync(
+      "git show feature/diverge-ok:host-change.txt",
+      { cwd: hostDir },
+    );
+    expect(hostContent.trim()).toBe("host work");
+
+    const { stdout: featureContent } = await execAsync(
+      "git show feature/diverge-ok:feature.txt",
+      { cwd: hostDir },
+    );
+    expect(featureContent.trim()).toBe("feature work");
+
+    // Host main unchanged
+    expect(await getBranch(hostDir)).toBe("main");
+  });
+
+  it("conflicting divergence: sync-out aborts entirely, host branch unchanged", async () => {
+    const { hostDir, sandboxRepoDir, layer } = await setup();
+    await initRepo(hostDir);
+    await commitFile(hostDir, "shared.txt", "original", "initial commit");
+
+    // Create target branch on host
+    await execAsync("git checkout -b feature/diverge-conflict", {
+      cwd: hostDir,
+    });
+    await execAsync("git checkout main", { cwd: hostDir });
+
+    // Sync-in with --branch
+    await Effect.runPromise(
+      syncIn(hostDir, sandboxRepoDir, {
+        branch: "feature/diverge-conflict",
+      }).pipe(Effect.provide(layer)),
+    );
+    const baseHead = await getHead(sandboxRepoDir);
+    await initSandboxGit(sandboxRepoDir);
+
+    // Sandbox modifies shared.txt
+    await writeFile(join(sandboxRepoDir, "shared.txt"), "sandbox version");
+    await execAsync("git add shared.txt", { cwd: sandboxRepoDir });
+    await execAsync('git commit -m "sandbox edit"', { cwd: sandboxRepoDir });
+
+    // Host branch diverges with conflicting change to same file
+    await execAsync("git checkout feature/diverge-conflict", { cwd: hostDir });
+    await writeFile(join(hostDir, "shared.txt"), "host version");
+    await execAsync("git add shared.txt", { cwd: hostDir });
+    await execAsync('git commit -m "host edit"', { cwd: hostDir });
+    const branchTipBeforeSyncOut = await getHead(hostDir);
+    await execAsync("git checkout main", { cwd: hostDir });
+
+    // Sync-out should fail
+    await expect(
+      Effect.runPromise(
+        syncOut(hostDir, sandboxRepoDir, baseHead, {
+          branch: "feature/diverge-conflict",
+        }).pipe(Effect.provide(layer)),
+      ),
+    ).rejects.toThrow();
+
+    // Host branch should be UNCHANGED (rolled back to pre-sync-out state)
+    const { stdout: branchTipAfter } = await execAsync(
+      "git rev-parse feature/diverge-conflict",
+      { cwd: hostDir },
+    );
+    expect(branchTipAfter.trim()).toBe(branchTipBeforeSyncOut);
+
+    // Worktree cleaned up
+    const { stdout: worktrees } = await execAsync("git worktree list", {
+      cwd: hostDir,
+    });
+    expect(worktrees.trim().split("\n")).toHaveLength(1);
+
+    // Host main unchanged
+    expect(await getBranch(hostDir)).toBe("main");
+  });
+
+  it("conflicting divergence with multiple patches: no partial application, branch fully rolled back", async () => {
+    const { hostDir, sandboxRepoDir, layer } = await setup();
+    await initRepo(hostDir);
+    await commitFile(hostDir, "shared.txt", "original", "initial commit");
+
+    // Create target branch on host
+    await execAsync("git checkout -b feature/partial-rollback", {
+      cwd: hostDir,
+    });
+    await execAsync("git checkout main", { cwd: hostDir });
+
+    // Sync-in with --branch
+    await Effect.runPromise(
+      syncIn(hostDir, sandboxRepoDir, {
+        branch: "feature/partial-rollback",
+      }).pipe(Effect.provide(layer)),
+    );
+    const baseHead = await getHead(sandboxRepoDir);
+    await initSandboxGit(sandboxRepoDir);
+
+    // Sandbox makes two commits: first non-conflicting, second conflicting
+    await commitFile(sandboxRepoDir, "safe.txt", "safe content", "safe commit");
+    await writeFile(join(sandboxRepoDir, "shared.txt"), "sandbox version");
+    await execAsync("git add shared.txt", { cwd: sandboxRepoDir });
+    await execAsync('git commit -m "conflicting commit"', {
+      cwd: sandboxRepoDir,
+    });
+
+    // Host branch diverges with conflicting change
+    await execAsync("git checkout feature/partial-rollback", { cwd: hostDir });
+    await writeFile(join(hostDir, "shared.txt"), "host version");
+    await execAsync("git add shared.txt", { cwd: hostDir });
+    await execAsync('git commit -m "host edit"', { cwd: hostDir });
+    const branchTipBefore = await getHead(hostDir);
+    await execAsync("git checkout main", { cwd: hostDir });
+
+    // Sync-out should fail
+    await expect(
+      Effect.runPromise(
+        syncOut(hostDir, sandboxRepoDir, baseHead, {
+          branch: "feature/partial-rollback",
+        }).pipe(Effect.provide(layer)),
+      ),
+    ).rejects.toThrow();
+
+    // Branch should be FULLY rolled back — no partial patches applied
+    const { stdout: branchTipAfter } = await execAsync(
+      "git rev-parse feature/partial-rollback",
+      { cwd: hostDir },
+    );
+    expect(branchTipAfter.trim()).toBe(branchTipBefore);
+
+    // Worktree cleaned up
+    const { stdout: worktrees } = await execAsync("git worktree list", {
+      cwd: hostDir,
+    });
+    expect(worktrees.trim().split("\n")).toHaveLength(1);
+  });
 });
 
 describe("--branch round-trip", () => {
