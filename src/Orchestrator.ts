@@ -189,8 +189,9 @@ export const orchestrate = (
                 yield* display.status(label("Agent started"), "success");
 
                 // Invoke the agent
-                const onText = (text: string) =>
-                  Effect.runSync(display.text(text));
+                const onText = (text: string) => {
+                  Effect.runPromise(display.text(text));
+                };
                 const { result: agentOutput, usage } = yield* invokeAgent(
                   ctx.sandbox,
                   ctx.sandboxRepoDir,
