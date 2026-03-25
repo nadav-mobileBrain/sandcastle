@@ -1,8 +1,8 @@
-import { Effect } from "effect";
+import { Duration, Effect } from "effect";
 import type { SandcastleConfig } from "./Config.js";
 import { Display } from "./Display.js";
 import { preprocessPrompt } from "./PromptPreprocessor.js";
-import { AgentError } from "./errors.js";
+import { AgentError, TimeoutError } from "./errors.js";
 import type { SandboxError } from "./errors.js";
 import type { SandboxService } from "./Sandbox.js";
 import { SandboxFactory } from "./SandboxFactory.js";
@@ -118,6 +118,7 @@ const formatUsageRows = (usage: TokenUsage): Record<string, string> => ({
 });
 
 const DEFAULT_COMPLETION_SIGNAL = "<promise>COMPLETE</promise>";
+const DEFAULT_TIMEOUT_SECONDS = 15 * 60; // 900 seconds
 
 export interface OrchestrateOptions {
   readonly hostRepoDir: string;
@@ -128,6 +129,8 @@ export interface OrchestrateOptions {
   readonly branch?: string;
   readonly model?: string;
   readonly completionSignal?: string;
+  /** Timeout in seconds. If the run exceeds this, it fails with TimeoutError. Default: 900 (15 minutes) */
+  readonly timeoutSeconds?: number;
 }
 
 export interface OrchestrateResult {
@@ -140,8 +143,9 @@ export interface OrchestrateResult {
 
 export const orchestrate = (
   options: OrchestrateOptions,
-): Effect.Effect<OrchestrateResult, SandboxError, SandboxFactory | Display> =>
-  Effect.gen(function* () {
+): Effect.Effect<OrchestrateResult, SandboxError, SandboxFactory | Display> => {
+  const timeoutSeconds = options.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS;
+  return Effect.gen(function* () {
     const factory = yield* SandboxFactory;
     const display = yield* Display;
     const { hostRepoDir, sandboxRepoDir, iterations, config, prompt, branch } =
@@ -237,4 +241,14 @@ export const orchestrate = (
       commits: allCommits,
       branch: resolvedBranch,
     };
-  });
+  }).pipe(
+    Effect.timeoutFail({
+      duration: Duration.seconds(timeoutSeconds),
+      onTimeout: () =>
+        new TimeoutError({
+          message: `Run timed out after ${timeoutSeconds} seconds`,
+          timeoutSeconds,
+        }),
+    }),
+  );
+};

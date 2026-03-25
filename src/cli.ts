@@ -216,6 +216,13 @@ const completionSignalOption = Options.text("completion-signal").pipe(
   Options.optional,
 );
 
+const timeoutOption = Options.integer("timeout").pipe(
+  Options.withDescription(
+    "Timeout in seconds for the entire run (default: 900, i.e. 15 minutes)",
+  ),
+  Options.optional,
+);
+
 const runCommand = Command.make(
   "run",
   {
@@ -228,6 +235,7 @@ const runCommand = Command.make(
     agent: agentOption,
     promptArgs: promptArgOption,
     completionSignal: completionSignalOption,
+    timeout: timeoutOption,
   },
   ({
     iterations,
@@ -239,6 +247,7 @@ const runCommand = Command.make(
     agent,
     promptArgs,
     completionSignal,
+    timeout,
   }) =>
     Effect.gen(function* () {
       const d = yield* Display;
@@ -271,6 +280,9 @@ const runCommand = Command.make(
       const resolvedCompletionSignal =
         completionSignal._tag === "Some" ? completionSignal.value : undefined;
 
+      const resolvedTimeout =
+        timeout._tag === "Some" ? timeout.value : undefined;
+
       const result = yield* Effect.tryPromise({
         try: () =>
           run({
@@ -287,6 +299,7 @@ const runCommand = Command.make(
             promptArgs: resolvedPromptArgs,
             logging: { type: "stdout" },
             completionSignal: resolvedCompletionSignal,
+            timeoutSeconds: resolvedTimeout,
           }),
         catch: (e) =>
           new AgentError({

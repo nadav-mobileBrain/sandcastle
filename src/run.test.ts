@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { sanitizeBranchForFilename, type RunResult } from "./run.js";
+import {
+  sanitizeBranchForFilename,
+  type RunOptions,
+  type RunResult,
+} from "./run.js";
 
 describe("RunResult", () => {
   it("includes logFilePath when logging to a file", () => {
@@ -23,6 +27,18 @@ describe("RunResult", () => {
       branch: "main",
     };
     expect(result.logFilePath).toBeUndefined();
+  });
+});
+
+describe("RunOptions", () => {
+  it("allows timeoutSeconds to be specified", () => {
+    const opts: RunOptions = { prompt: "test", timeoutSeconds: 120 };
+    expect(opts.timeoutSeconds).toBe(120);
+  });
+
+  it("allows timeoutSeconds to be omitted (uses default)", () => {
+    const opts: RunOptions = { prompt: "test" };
+    expect(opts.timeoutSeconds).toBeUndefined();
   });
 });
 

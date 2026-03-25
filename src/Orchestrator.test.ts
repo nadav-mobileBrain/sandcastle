@@ -1,4 +1,4 @@
-import { Effect, Layer, Ref } from "effect";
+import { Cause, Effect, Layer, Ref } from "effect";
 import { exec } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -16,6 +16,7 @@ import {
 } from "./Orchestrator.js";
 import { Sandbox } from "./Sandbox.js";
 import type { DockerError, SandboxError } from "./errors.js";
+import { TimeoutError } from "./errors.js";
 import { SandboxFactory } from "./SandboxFactory.js";
 
 const execAsync = promisify(exec);
@@ -1435,4 +1436,42 @@ describe("Orchestrator Display integration", () => {
       statusEntries.some((e) => e.message.includes("max iterations")),
     ).toBe(true);
   });
+
+  it("fails with TimeoutError when timeoutSeconds is exceeded", async () => {
+    const hostDir = await mkdtemp(join(tmpdir(), "orch-timeout-"));
+
+    await initRepo(hostDir);
+    await commitFile(hostDir, "hello.txt", "hello", "initial commit");
+
+    // Mock agent: takes 2 seconds to respond
+    const { factoryLayer, sandboxRepoDir } = makeTestSandboxFactory((dir) =>
+      makeMockAgentLayer(dir, async () => {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        return "done";
+      }),
+    );
+
+    const exitResult = await Effect.runPromise(
+      orchestrate({
+        hostRepoDir: hostDir,
+        sandboxRepoDir,
+        iterations: 1,
+        prompt: "test",
+        timeoutSeconds: 0.1, // 100ms — well below the 2s agent delay
+      }).pipe(
+        Effect.provide(Layer.merge(factoryLayer, testDisplayLayer)),
+        Effect.exit,
+      ),
+    );
+
+    expect(exitResult._tag).toBe("Failure");
+    if (exitResult._tag === "Failure") {
+      const err = Cause.squash(exitResult.cause);
+      expect(err).toBeInstanceOf(TimeoutError);
+      if (err instanceof TimeoutError) {
+        expect(err.timeoutSeconds).toBe(0.1);
+        expect(err.message).toContain("0.1");
+      }
+    }
+  }, 10_000);
 });

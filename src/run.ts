@@ -50,6 +50,8 @@ export interface RunOptions {
   readonly logging?: LoggingOption;
   /** Custom completion signal string (default: "<promise>COMPLETE</promise>") */
   readonly completionSignal?: string;
+  /** Timeout in seconds. If the run exceeds this, it fails. Default: 900 (15 minutes) */
+  readonly timeoutSeconds?: number;
 }
 
 export interface RunResult {
@@ -177,6 +179,7 @@ export const run = async (options: RunOptions): Promise<RunResult> => {
         branch,
         model: resolvedModel,
         completionSignal: options.completionSignal,
+        timeoutSeconds: options.timeoutSeconds,
       });
     }).pipe(Effect.provide(runLayer)),
   );

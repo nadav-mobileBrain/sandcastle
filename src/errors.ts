@@ -47,6 +47,12 @@ export class InitError extends Data.TaggedError("InitError")<{
   readonly message: string;
 }> {}
 
+/** Run exceeded the configured timeout */
+export class TimeoutError extends Data.TaggedError("TimeoutError")<{
+  readonly message: string;
+  readonly timeoutSeconds: number;
+}> {}
+
 /** Union of all sandbox-related errors */
 export type SandboxError =
   | ExecError
@@ -57,4 +63,5 @@ export type SandboxError =
   | PromptError
   | AgentError
   | ConfigDirError
-  | InitError;
+  | InitError
+  | TimeoutError;
