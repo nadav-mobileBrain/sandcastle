@@ -13,7 +13,6 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   const plan = await sandcastle.run({
     name: "Planner",
     hooks,
-    maxIterations: 1,
     model: "claude-opus-4-6",
     promptFile: "./.sandcastle/plan-prompt.md",
     copyToSandbox: ["node_modules"],
