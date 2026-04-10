@@ -9,7 +9,6 @@ import { describe, expect, it } from "vitest";
 import { claudeCode, pi } from "./AgentProvider.js";
 import { createSandbox } from "./createSandbox.js";
 import { Sandbox } from "./SandboxFactory.js";
-import type { BindMountSandboxHandle } from "./SandboxProvider.js";
 import { createBindMountSandboxProvider } from "./SandboxProvider.js";
 import { makeLocalSandboxLayer } from "./testSandbox.js";
 
@@ -483,7 +482,6 @@ describe("createSandbox", () => {
 
     let createCallCount = 0;
     let closeCallCount = 0;
-    let capturedHandle: BindMountSandboxHandle | undefined;
 
     // Isolated git config so global writes don't pollute developer config
     const gitTmpDir = mkdtempSync(join(tmpdir(), "test-gitconfig-"));
@@ -499,11 +497,10 @@ describe("createSandbox", () => {
       create: async (opts) => {
         createCallCount++;
         const workDir = opts.worktreePath;
-        const handle: BindMountSandboxHandle = {
+        return {
           workspacePath: workDir,
           exec: async (cmd, execOpts) => {
             const cwd = execOpts?.cwd ?? workDir;
-            // Short-circuit agent commands
             if (cmd.startsWith("claude ")) {
               return { stdout: "mock", stderr: "", exitCode: 0 };
             }
@@ -533,8 +530,6 @@ describe("createSandbox", () => {
             closeCallCount++;
           },
         };
-        capturedHandle = handle;
-        return handle;
       },
     });
 
