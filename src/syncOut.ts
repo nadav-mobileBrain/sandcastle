@@ -7,7 +7,14 @@
  * 3. Untracked files: `git ls-files --others` + `copyOut` each file
  */
 
-import { mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { IsolatedSandboxHandle } from "./SandboxProvider.js";
@@ -27,13 +34,12 @@ const isEmptyPatch = async (patchPath: string): Promise<boolean> => {
 };
 
 /**
- * Sync committed changes from an isolated sandbox back to the host repo.
+ * Sync changes from an isolated sandbox back to the host repo.
  *
- * Compares the sandbox HEAD against the host HEAD to determine new commits,
- * generates patches via `git format-patch`, transfers them to the host via
- * `copyOut`, filters out empty patches, and applies them with `git am --3way`.
- *
- * No-op if the sandbox has no new commits.
+ * Three-prong extraction:
+ * 1. Committed changes via `git format-patch` / `git am --3way`
+ * 2. Uncommitted changes (staged + unstaged) via `git diff HEAD` / `git apply`
+ * 3. Untracked files via `git ls-files --others` / `copyOut`
  */
 export const syncOut = async (
   hostRepoDir: string,
@@ -98,14 +104,7 @@ export const syncOut = async (
     const hostDiffDir = await mkdtemp(join(tmpdir(), "sandcastle-diff-"));
     const hostDiffPath = join(hostDiffDir, "uncommitted.patch");
     try {
-      // Write the diff to a file in the sandbox, then copyOut
-      const sandboxDiffPath = "/tmp/sandcastle-uncommitted.patch";
-      await execOk(handle, `git diff HEAD > "${sandboxDiffPath}"`, {
-        cwd: workspacePath,
-      });
-      await handle.copyOut(sandboxDiffPath, hostDiffPath);
-      await handle.exec(`rm -f "${sandboxDiffPath}"`);
-
+      await writeFile(hostDiffPath, diffResult.stdout);
       await execHost(`git apply "${hostDiffPath}"`, hostRepoDir);
     } finally {
       await rm(hostDiffDir, { recursive: true, force: true });
