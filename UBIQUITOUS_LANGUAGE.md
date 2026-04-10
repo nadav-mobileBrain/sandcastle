@@ -2,12 +2,18 @@
 
 ## Core concepts
 
-| Term           | Definition                                                                                                                    | Aliases to avoid                                                                        |
-| -------------- | ----------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| **Sandcastle** | The TypeScript CLI tool that orchestrates AI coding agents inside isolated environments                                       | "the tool", "the CLI", "RALPH"                                                          |
-| **Sandbox**    | An isolated environment where an agent executes code — a Docker container with the **worktree** bind-mounted as the workspace | "container" (too specific), "Docker sandbox" (ambiguous with Claude's built-in feature) |
-| **Host**       | The developer's machine where Sandcastle runs and the real git repo lives                                                     | "local" (ambiguous — the sandbox also has a local filesystem)                           |
-| **Agent**      | The AI coding tool invoked inside the sandbox (e.g. Claude Code, Codex)                                                       | "RALPH", "the bot", "Claude" (too specific — agent is swappable)                        |
+| Term                            | Definition                                                                                                                                                                                                                       | Aliases to avoid                                                                        |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| **Sandcastle**                  | The TypeScript CLI tool that orchestrates AI coding agents inside isolated environments                                                                                                                                          | "the tool", "the CLI", "RALPH"                                                          |
+| **Sandbox**                     | An isolated environment where an agent executes code. Created and managed by a **sandbox provider**                                                                                                                              | "container" (too specific), "Docker sandbox" (ambiguous with Claude's built-in feature) |
+| **Sandbox provider**            | A pluggable implementation that creates and manages a **sandbox**. Injected into `run()` via the `sandbox` option, mirroring how an **agent provider** is injected via `agent`. Either a **bind-mount** or **isolated** provider | "backend", "runtime", "sandbox factory"                                                 |
+| **Bind-mount sandbox provider** | A **sandbox provider** where Sandcastle creates a **worktree** on the **host** and the provider mounts it into the environment. The host filesystem is shared — no sync needed. Docker and Podman are bind-mount providers       | "local provider", "mount provider"                                                      |
+| **Isolated sandbox provider**   | A **sandbox provider** where the environment has its own filesystem. The provider handles syncing code in and extracting commits out via `copyIn`, `copyOut`, and `extractCommits`                                               | "remote provider", "sync provider"                                                      |
+| **Sandbox handle**              | The object returned by a **sandbox provider**'s `create()` method. Exposes `exec`, `execStreaming`, and `close`. **Isolated** handles additionally expose `copyIn`, `copyOut`, and `extractCommits`                              | "sandbox instance", "sandbox connection"                                                |
+| **Bundle/patch sync**           | A reusable utility for **isolated sandbox providers** that syncs repos via `git bundle` and extracts commits via `git format-patch` / `git am`. Not part of the core contract — providers opt into it                            | "sync service", "repo sync"                                                             |
+| **Host**                        | The developer's machine where Sandcastle runs and the real git repo lives                                                                                                                                                        | "local" (ambiguous — the sandbox also has a local filesystem)                           |
+| **Agent**                       | The AI coding tool invoked inside the sandbox (e.g. Claude Code, Codex)                                                                                                                                                          | "RALPH", "the bot", "Claude" (too specific — agent is swappable)                        |
+| **Agent provider**              | A pluggable implementation that builds commands and parses output for a specific **agent**. Injected into `run()` via the `agent` option                                                                                         | "agent adapter", "agent driver"                                                         |
 
 ## Environment
 
@@ -38,9 +44,9 @@
 | Term                 | Definition                                                                                                         | Aliases to avoid                       |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------ | -------------------------------------- |
 | **Config directory** | The `.sandcastle/` directory in a host repo containing sandbox configuration: Dockerfile, prompt, and env settings | ".sandcastle folder", "sandcastle dir" |
-| **Init**             | The CLI command that scaffolds the **config directory** in a host repo and builds the Docker image                 | "create", "bootstrap", "new"           |
-| **Build-image**      | The CLI command that rebuilds the Docker image from an existing **config directory**                               | "setup-sandbox" (old name)             |
-| **Remove-image**     | The CLI command that removes the Docker image                                                                      | "cleanup-sandbox" (old name)           |
+| **Init**             | The CLI command that scaffolds the **config directory** in a host repo                                             | "create", "bootstrap", "new"           |
+| **Build-image**      | A provider-namespaced CLI command that rebuilds the image. E.g. `sandcastle docker build-image`                    | "setup-sandbox" (old name)             |
+| **Remove-image**     | A provider-namespaced CLI command that removes the image. E.g. `sandcastle docker remove-image`                    | "cleanup-sandbox" (old name)           |
 
 ## Output
 
@@ -52,19 +58,23 @@
 
 ## Architecture
 
-| Term                | Definition                                                                                                                                                                      | Aliases to avoid       |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------- |
-| **Sandbox service** | The Effect service interface exposing `exec`, `copyIn`, and `copyOut` operations against a sandbox                                                                              | "adapter", "transport" |
-| **Worktree**        | A git worktree created in `.sandcastle/worktrees/` on the **host**, bind-mounted into the **sandbox** container as the agent's working directory — eliminates the need for sync | "branch copy", "clone" |
+| Term                | Definition                                                                                                                                                                                   | Aliases to avoid       |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------- |
+| **Sandbox service** | The internal Effect service interface exposing `exec`, `copyIn`, and `copyOut` operations against a sandbox. Wraps the **sandbox handle** for use inside Sandcastle's Effect-based internals | "adapter", "transport" |
+| **Worktree**        | A git worktree created in `.sandcastle/worktrees/` on the **host**. For **bind-mount sandbox providers**, this is mounted into the sandbox as the agent's working directory — no sync needed | "branch copy", "clone" |
 
 ## Relationships
 
 - **Sandcastle** orchestrates an **agent** inside a **sandbox**
-- A **sandbox** is a Docker container backed by a **worktree** bind-mounted at the workspace path, implementing the **Sandbox service** interface
-- The **worktree** is bind-mounted into the **sandbox** container, so the agent writes directly to the **host** filesystem — no sync operations are needed
+- A **sandbox** is created by a **sandbox provider**, which is injected into `run()` via the `sandbox` option — this is required, there is no default
+- A **sandbox provider** is either a **bind-mount sandbox provider** or an **isolated sandbox provider**
+- A **bind-mount sandbox provider** receives a **worktree** path from Sandcastle. Sandcastle creates the worktree and handles commit extraction directly from the host filesystem
+- An **isolated sandbox provider** receives the repo path and branch name. It handles syncing code in and extracting commits out — optionally using the **bundle/patch sync** utility. **Isolated sandbox providers are defined in the type system but not yet implemented.** A previous bundle/patch sync implementation is available in git history if needed
+- The **sandbox handle** returned by a provider's `create()` is wrapped internally into the **sandbox service** for use in Sandcastle's Effect-based internals
+- **Sandbox providers** are imported from subpaths (e.g. `sandcastle/sandboxes/docker`) — the main `sandcastle` entry point does not re-export any provider
 - Each **iteration** may produce one or more commits; iterations repeat until the **completion signal** fires or the max count is reached
-- **Init** creates the **config directory** on the **host** and builds the Docker image
-- **Build-image** requires the **config directory** to already exist on the **host**
+- **Init** creates the **config directory** on the **host**
+- **Build-image** and **remove-image** are namespaced under their provider in the CLI (e.g. `sandcastle docker build-image`)
 - The **env resolver** loads env vars from: **config directory** `.env` > `process.env` — only keys declared in the **config directory** `.env` are resolved from `process.env`; repo root `.env` is not part of the resolution chain
 - Each **agent provider** declares an **env manifest**
 - The **agent provider** is selected via the `agent` field in config or `--agent` CLI flag
@@ -117,10 +127,23 @@
 
 > **Domain expert:** "No — **built-in prompt arguments** can't be overridden. If you pass `TARGET_BRANCH` in `promptArgs`, **prompt argument substitution** fails with an error. Use a different key name if you need a custom value."
 
+> **Dev:** "What if I want to use Podman instead of Docker?"
+
+> **Domain expert:** "Import a different **sandbox provider**. Instead of `import { docker } from 'sandcastle/sandboxes/docker'`, use `import { podman } from 'sandcastle/sandboxes/podman'`. Both are **bind-mount sandbox providers** — Sandcastle creates the **worktree** and the provider mounts it. The `sandbox` option in `run()` is required, so you always choose explicitly."
+
+> **Dev:** "What about a cloud VM that can't bind-mount my local filesystem?"
+
+> **Domain expert:** "That would be an **isolated sandbox provider**. It receives the repo path and branch name, syncs code in however it wants — maybe using the **bundle/patch sync** utility — and exposes `extractCommits` so Sandcastle can pull commits back to the **host**. The core orchestrator doesn't care how it works, it just needs a **sandbox handle** with `exec` and `execStreaming`."
+
+> **Dev:** "Can I write my own provider?"
+
+> **Domain expert:** "Yes. Implement a function that returns a `SandboxProvider`. If your environment can mount a host directory, use the bind-mount factory — Sandcastle handles worktrees and commit extraction for you. If not, use the isolated factory and implement `copyIn`, `copyOut`, and `extractCommits` on the **sandbox handle**."
+
 ## Flagged ambiguities
 
+- **"Provider"** — Overloaded: both **agent provider** and **sandbox provider** exist. Always qualify — say "agent provider" or "sandbox provider", never just "provider" in isolation.
 - **"Docker sandbox"** — In this project, **sandbox** refers to our isolated environment concept. It is NOT Claude Code's built-in `docker sandbox` CLI feature. Use **sandbox** for ours; spell out "Claude's Docker sandbox CLI" for the built-in feature.
-- **"Container"** vs **"Sandbox"** — "Container" is the Docker primitive; **sandbox** is our abstraction over it. Use **sandbox** when talking about the concept, "container" only when discussing Docker implementation details.
+- **"Container"** vs **"Sandbox"** — "Container" is a Docker/Podman primitive; **sandbox** is our abstraction over it. Use **sandbox** when talking about the concept, "container" only when discussing a specific provider's implementation details.
 - **"Local"** vs **"Host"** — Both could mean the developer's machine, but "local" is ambiguous (the **worktree** is also on a local filesystem). Use **host** to mean the developer's machine. Reserve "local" for generic contexts.
 - **"Run"** — Can mean the JS `run()` function or a single **iteration**. Use **iteration** for one agent invocation; use "run session" for a call to `run()` that drives multiple iterations.
 - **"Token"** vs **"Env var"** — The old `TokenResolver` name implied it only handled auth tokens. The **env resolver** handles all environment variables generically. Use "env var" for the general concept; "token" only when referring specifically to an auth credential value.
