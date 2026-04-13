@@ -237,7 +237,7 @@ export const run = async (options: RunOptions): Promise<RunResult> => {
   );
   const env = mergeProviderEnv({
     resolvedEnv,
-    agentProviderEnv: provider.env ?? {},
+    agentProviderEnv: provider.env,
     sandboxProviderEnv: options.sandbox.env,
   });
 

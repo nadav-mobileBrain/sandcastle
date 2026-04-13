@@ -65,7 +65,7 @@ const parseStreamJsonLine = (line: string): ParsedStreamEvent[] => {
 export interface AgentProvider {
   readonly name: string;
   /** Environment variables injected by this agent provider. Merged at launch time with env resolver and sandbox provider env. */
-  readonly env?: Record<string, string>;
+  readonly env: Record<string, string>;
   buildPrintCommand(prompt: string): string;
   buildInteractiveArgs(prompt: string): string[];
   parseStreamLine(line: string): ParsedStreamEvent[];
