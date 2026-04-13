@@ -203,16 +203,23 @@ export function getNextStepsLines(
       "5. Run `npm run sandcastle` to start the agent",
     ];
   } else {
-    return [
+    const hasReviewer = template.includes("review");
+    let step = 1;
+    const lines: string[] = [
       "Next steps:",
-      `1. Set the required env vars in .sandcastle/.env (see .sandcastle/.env.example)`,
+      `${step++}. Set the required env vars in .sandcastle/.env (see .sandcastle/.env.example)`,
       "   If you want to use your Claude subscription instead of an API key, see https://github.com/mattpocock/sandcastle/issues/191",
-      `2. Add "sandcastle": "npx tsx .sandcastle/${mainFilename}" to your package.json scripts`,
-      '3. Templates use `copyToSandbox: ["node_modules"]` to copy your host node_modules into the sandbox for fast startup — the `npm install` in the onSandboxReady hook is a safety net for platform-specific binaries. Adjust both if you use a different package manager',
-      "4. Read and customize the prompt files in .sandcastle/ — they shape what the agent does",
-      "5. Customize .sandcastle/CODING_STANDARDS.md with your project's standards — the reviewer agent loads it during review",
-      "6. Run `npm run sandcastle` to start the agent",
+      `${step++}. Add "sandcastle": "npx tsx .sandcastle/${mainFilename}" to your package.json scripts`,
+      `${step++}. Templates use \`copyToSandbox: ["node_modules"]\` to copy your host node_modules into the sandbox for fast startup — the \`npm install\` in the onSandboxReady hook is a safety net for platform-specific binaries. Adjust both if you use a different package manager`,
+      `${step++}. Read and customize the prompt files in .sandcastle/ — they shape what the agent does`,
     ];
+    if (hasReviewer) {
+      lines.push(
+        `${step++}. Customize .sandcastle/CODING_STANDARDS.md with your project's standards — the reviewer agent loads it during review`,
+      );
+    }
+    lines.push(`${step++}. Run \`npm run sandcastle\` to start the agent`);
+    return lines;
   }
 }
 

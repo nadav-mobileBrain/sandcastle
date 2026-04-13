@@ -528,10 +528,16 @@ describe("InitService scaffold", () => {
       expect(joined).not.toContain("main.mts");
     });
 
-    it("non-blank template mentions CODING_STANDARDS.md customization", () => {
+    it("reviewer template mentions CODING_STANDARDS.md customization", () => {
       const lines = getNextStepsLines("sequential-reviewer", "main.mts");
       const joined = lines.join("\n");
       expect(joined).toContain("CODING_STANDARDS.md");
+    });
+
+    it("non-reviewer template does not mention CODING_STANDARDS.md", () => {
+      const lines = getNextStepsLines("simple-loop", "main.mts");
+      const joined = lines.join("\n");
+      expect(joined).not.toContain("CODING_STANDARDS.md");
     });
 
     it("blank template does not mention CODING_STANDARDS.md", () => {
