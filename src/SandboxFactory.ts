@@ -112,7 +112,8 @@ export const makeSandboxLayerFromHandle = (
 export const SANDBOX_WORKSPACE_DIR = "/home/agent/workspace";
 
 export interface SandboxInfo {
-  /** Host-side path to the worktree directory (worktree mode only). */
+  /** Host-side path to the worktree (worktree mode) or repo directory (head mode).
+   *  Used by SandboxLifecycle for host-side git operations. */
   readonly hostWorktreePath?: string;
   /** Absolute path to the workspace inside the sandbox, as reported by the provider. */
   readonly sandboxWorkspacePath: string;
